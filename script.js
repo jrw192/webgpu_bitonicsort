@@ -88,7 +88,19 @@ async function main() {
     device.queue.writeBuffer(stateBuffers[1], 0, stateArray);
 
 
-    // debug
+    // ------------ compute shader module ------------
+    const WORKGROUP_SIZE = 8;
+    const computeShaderModule = device.createShaderModule({
+        label: "compute shader module",
+        code: /*wgsl*/`
+        struct ComputeInput {
+                @builtin(global_invocation_id) cell: vec3u,
+            }
+
+            @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
+            fn computeMain(input: ComputeInput) {} 
+        `
+    });
 
 
     // ------------ vertex + frag shader module ------------
@@ -194,7 +206,17 @@ async function main() {
         })
     ];
 
-    // ------------ render pipeline ------------
+    // ------------ render + compute pipelines ------------
+    const computePipeline = device.createComputePipeline({
+        label: "compute pipeline",
+        layout: pipelineLayout,
+        compute: {
+            module: computeShaderModule,
+            entryPoint: "computeMain",
+        }
+    });
+
+
     const renderPipeline = device.createRenderPipeline({
         label: "render pipeline",
         layout: pipelineLayout,
@@ -229,6 +251,17 @@ async function main() {
     function render() {
         step += 1;
         const encoder = device.createCommandEncoder();
+
+        // compute pass
+        const computePass = encoder.beginComputePass();
+        computePass.setPipeline(computePipeline);
+        computePass.setBindGroup(0, bindGroups[step % 2]);
+        const workgroupCount = Math.ceil(GRID_SIZE / WORKGROUP_SIZE);
+
+        computePass.dispatchWorkgroups(workgroupCount, workgroupCount);
+        computePass.end();
+
+        // draw pass
         const pass = encoder.beginRenderPass({
             colorAttachments: [{
                 view: context.getCurrentTexture().createView(),
@@ -239,8 +272,8 @@ async function main() {
         });
 
         pass.setPipeline(renderPipeline);
-        pass.setVertexBuffer(0, vertexBuffer);
         pass.setBindGroup(0, bindGroups[step % 2]);
+        pass.setVertexBuffer(0, vertexBuffer);
 
         pass.draw(vertices.length / 2, GRID_SIZE * GRID_SIZE);
         pass.end();
