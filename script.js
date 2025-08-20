@@ -135,8 +135,7 @@ async function main() {
         `
     });
 
-    // ------------ render pipeline ------------
-    // create the bind group layout and pipeline layout.
+    // ------------ set up bind groups ------------
     const bindGroupLayout = device.createBindGroupLayout({
         label: "bind group layout",
         entries: [{
@@ -195,6 +194,7 @@ async function main() {
         })
     ];
 
+    // ------------ render pipeline ------------
     const renderPipeline = device.createRenderPipeline({
         label: "render pipeline",
         layout: pipelineLayout,
@@ -227,7 +227,6 @@ async function main() {
 
     let step = 0;
     function render() {
-        // console.log('step',step);
         step += 1;
         const encoder = device.createCommandEncoder();
         const pass = encoder.beginRenderPass({
