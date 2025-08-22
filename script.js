@@ -4,7 +4,6 @@ async function main() {
     if (!navigator.gpu) {
         throw new Error("WebGPU not supported on this browser.");
     }
-    console.log(navigator.gpu);
 
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) {
@@ -18,7 +17,6 @@ async function main() {
         device: device,
         format: canvasFormat,
     });
-
 
     // ------------ define vertexBuffer ------------
     const vertices = new Float32Array([
@@ -52,7 +50,7 @@ async function main() {
     };
 
     // ------------ define uniformBuffer ------------
-    const GRID_SIZE = 16;
+    const GRID_SIZE = 32;
     const uniformArray = new Float32Array([GRID_SIZE, GRID_SIZE]);
     const uniformBuffer = device.createBuffer({
         label: "uniform",
@@ -60,7 +58,6 @@ async function main() {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
-
 
     // ------------ define stateBuffer ------------
     const stateArray = new Float32Array(GRID_SIZE * GRID_SIZE);
@@ -81,11 +78,17 @@ async function main() {
         stateArray[i] = Math.round(Math.random() * 10) / 10;
     }
     device.queue.writeBuffer(stateBuffers[0], 0, stateArray);
-    console.log(stateArray);
     for (let i = 0; i < stateArray.length; i++) {
         stateArray[i] = Math.round(Math.random() * 10) / 10;
     }
     device.queue.writeBuffer(stateBuffers[1], 0, stateArray);
+
+    // ------------ define stageBuffer ------------
+    const stageBuffer = device.createBuffer({
+        label: "state",
+        size: 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
 
 
     // ------------ compute shader module ------------
@@ -94,11 +97,55 @@ async function main() {
         label: "compute shader module",
         code: /*wgsl*/`
         struct ComputeInput {
-                @builtin(global_invocation_id) cell: vec3u,
+                @builtin(global_invocation_id) invocation_id: vec3u,
+            }
+
+            @group(0) @binding(0) var<uniform> grid: vec2f;
+            // bind the 2 cell state arrays
+            @group(0) @binding(1) var<storage> cellStateIn: array<u32>;
+            @group(0) @binding(2) var<storage, read_write> cellStateOut: array<u32>;
+            @group(0) @binding(3) var<storage, read_write> stage: array<u32>;
+
+            fn cellToIndex(cell: vec2u) -> u32 {
+                return cell.y * u32(grid.x) + cell.x;
             }
 
             @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
-            fn computeMain(input: ComputeInput) {} 
+            fn computeMain(input: ComputeInput) {
+                // step 1: identify your unique position (id)
+                let index = cellToIndex(input.invocation_id.xy);
+
+                // step 2: determine partner's position
+                let partner_index = index ^ 4;
+
+                // step 3: avoid duplication
+
+                // step 4: determine sorting direction (ascending/descending)
+                let j = stage[0];
+                var ascending = false;
+                if (index & j == 0) {
+                    ascending = true;
+                }
+
+                // step 5: fetch the numbers
+                let num1 = cellStateIn[index];
+                let num2 = cellStateIn[partner_index];
+
+                // step 6: compare and swap
+                if (ascending) {
+                    if (num1 > num2) {
+                        //swap
+                        cellStateOut[index] = num2;
+                        cellStateOut[partner_index] = num1;
+                    }
+                } else {
+                    if (num2 > num1) {
+                        // swap
+                        cellStateOut[index] = num2;
+                        cellStateOut[partner_index] = num1;
+                    }
+                }
+            } 
         `
     });
 
@@ -131,7 +178,10 @@ async function main() {
                 let cellOffset = cell / grid * 2;
                 // translate the square into a grid space, translate the coordinate system into bottom left corner
                 // and then move it by the cell offset
-                let gridPos = ((input.pos+1) / grid) -1 + cellOffset;
+                // let gridPos = ((input.pos+1) / grid) -1 + cellOffset;
+                var gridPos = ((input.pos+1) / grid);
+                gridPos.x += cellOffset.x-1;
+                gridPos.y += 0.93;
                 var output: VertexOutput;
                 output.pos = vec4f(gridPos, 0, 1);
                 output.cell = cell;
@@ -163,7 +213,12 @@ async function main() {
             binding: 2,
             visibility: GPUShaderStage.COMPUTE,
             buffer: { type: "storage" } // state output buffer
-        }
+        },
+        {
+            binding: 3,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "storage" }
+        },
         ]
     });
     const pipelineLayout = device.createPipelineLayout({
@@ -181,10 +236,12 @@ async function main() {
             }, {
                 binding: 1,
                 resource: { buffer: stateBuffers[0] }
-            },
-            {
+            }, {
                 binding: 2,
                 resource: { buffer: stateBuffers[1] }
+            }, {
+                binding: 3,
+                resource: { buffer: stageBuffer }
             }
             ],
         }),
@@ -201,6 +258,9 @@ async function main() {
             {
                 binding: 2,
                 resource: { buffer: stateBuffers[0] }
+            }, {
+                binding: 3,
+                resource: { buffer: stageBuffer }
             }
             ],
         })
@@ -248,14 +308,17 @@ async function main() {
 
 
     let step = 0;
+    let stage = 2;
     function render() {
         step += 1;
+        stage *= 2;
+        device.queue.writeBuffer(stageBuffer, 0, new Uint32Array([stage]));
         const encoder = device.createCommandEncoder();
 
         // compute pass
         const computePass = encoder.beginComputePass();
         computePass.setPipeline(computePipeline);
-        computePass.setBindGroup(0, bindGroups[step % 2]);
+        computePass.setBindGroup(0, bindGroups[0]);
         const workgroupCount = Math.ceil(GRID_SIZE / WORKGROUP_SIZE);
 
         computePass.dispatchWorkgroups(workgroupCount, workgroupCount);
@@ -266,22 +329,59 @@ async function main() {
             colorAttachments: [{
                 view: context.getCurrentTexture().createView(),
                 loadOp: "clear",
-                clearValue: { r: 0, g: 0, b: 1, a: 1 },
+                clearValue: { r: 0, g: 0, b: 0.3, a: 1 },
                 storeOp: "store",
             }]
         });
 
         pass.setPipeline(renderPipeline);
-        pass.setBindGroup(0, bindGroups[step % 2]);
+        pass.setBindGroup(0, bindGroups[0]);
         pass.setVertexBuffer(0, vertexBuffer);
 
-        pass.draw(vertices.length / 2, GRID_SIZE * GRID_SIZE);
+        pass.draw(vertices.length / 2, GRID_SIZE);
         pass.end();
 
         device.queue.submit([encoder.finish()]);
     }
 
-    setInterval(render, 1000);
+    // setInterval(render, 1000);
+
+    function render() {
+        step += 1;
+
+        for (let stage = 2; stage <= GRID_SIZE; stage *= 2) {
+            device.queue.writeBuffer(stageBuffer, 0, new Uint32Array([stage]));
+            const encoder = device.createCommandEncoder();
+
+            // compute pass
+            const computePass = encoder.beginComputePass();
+            computePass.setPipeline(computePipeline);
+            computePass.setBindGroup(0, bindGroups[0]);
+            const workgroupCount = Math.ceil(GRID_SIZE / WORKGROUP_SIZE);
+
+            computePass.dispatchWorkgroups(workgroupCount, workgroupCount);
+            computePass.end();
+
+            // draw pass
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: context.getCurrentTexture().createView(),
+                    loadOp: "clear",
+                    clearValue: { r: 0, g: 0, b: 0.3, a: 1 },
+                    storeOp: "store",
+                }]
+            });
+
+            pass.setPipeline(renderPipeline);
+            pass.setBindGroup(0, bindGroups[0]);
+            pass.setVertexBuffer(0, vertexBuffer);
+
+            pass.draw(vertices.length / 2, GRID_SIZE);
+            pass.end();
+
+            device.queue.submit([encoder.finish()]);
+        }
+    }
 
 }
 
