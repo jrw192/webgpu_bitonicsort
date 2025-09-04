@@ -123,7 +123,7 @@ async function main() {
                 // step 4: determine sorting direction (ascending/descending)
                 let j = stage[0];
                 var ascending = false;
-                if (index & j == 0) {
+                if ((index & j) == 0) {
                     ascending = true;
                 }
 
@@ -350,6 +350,7 @@ async function main() {
         step += 1;
 
         for (let stage = 2; stage <= GRID_SIZE; stage *= 2) {
+            console.log('stage',stage);
             device.queue.writeBuffer(stageBuffer, 0, new Uint32Array([stage]));
             const encoder = device.createCommandEncoder();
 
@@ -382,6 +383,8 @@ async function main() {
             device.queue.submit([encoder.finish()]);
         }
     }
+
+    render();
 
 }
 
