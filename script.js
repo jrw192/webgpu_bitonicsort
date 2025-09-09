@@ -49,7 +49,7 @@ async function main() {
         }],
     };
 
-    // ------------ define uniformBuffer ------------
+    // ------------ define uniformBuffer for grid ------------
     const GRID_SIZE = 32;
     const uniformArray = new Float32Array([GRID_SIZE, GRID_SIZE]);
     const uniformBuffer = device.createBuffer({
@@ -58,6 +58,13 @@ async function main() {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
+
+    // ------------ define uniformBuffer for stage ------------
+    const stageBuffer = device.createBuffer({
+        label: "stage info",
+        size: 3 * 4 + 4, // 3 u32s + 4 bytes padding
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
 
     // ------------ define stateBuffer ------------
     const stateArray = new Float32Array(GRID_SIZE * GRID_SIZE);
@@ -83,67 +90,64 @@ async function main() {
     }
     device.queue.writeBuffer(stateBuffers[1], 0, stateArray);
 
-    // ------------ define stageBuffer ------------
-    const stageBuffer = device.createBuffer({
-        label: "state",
-        size: 4,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
 
     // ------------ compute shader module ------------
     const WORKGROUP_SIZE = 8;
     const computeShaderModule = device.createShaderModule({
         label: "compute shader module",
         code: /*wgsl*/`
-        struct ComputeInput {
+            struct ComputeInput {
                 @builtin(global_invocation_id) invocation_id: vec3u,
             }
 
+            struct StageData {
+                grid_size: u32,
+                stage_id: u32,
+                pass_id: u32,
+            };
+
             @group(0) @binding(0) var<uniform> grid: vec2f;
             // bind the 2 cell state arrays
-            @group(0) @binding(1) var<storage> cellStateIn: array<u32>;
-            @group(0) @binding(2) var<storage, read_write> cellStateOut: array<u32>;
-            @group(0) @binding(3) var<storage, read_write> stage: array<u32>;
+            @group(0) @binding(1) var<storage> cellStateIn: array<f32>;
+            @group(0) @binding(2) var<storage, read_write> cellStateOut: array<f32>;
+            @group(0) @binding(3) var<uniform> stage: StageData;
 
             fn cellToIndex(cell: vec2u) -> u32 {
                 return cell.y * u32(grid.x) + cell.x;
             }
 
-            @compute @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
+            @compute @workgroup_size(${WORKGROUP_SIZE}, 1, 1)
             fn computeMain(input: ComputeInput) {
                 // step 1: identify your unique position (id)
                 let index = cellToIndex(input.invocation_id.xy);
 
                 // step 2: determine partner's position
-                let partner_index = index ^ 4;
+                let passStride = u32(1 << stage.pass_id);
+                let partnerIndex = index ^ passStride;
 
                 // step 3: avoid duplication
+                if (index > partnerIndex) {
+                    return;
+                }
 
                 // step 4: determine sorting direction (ascending/descending)
-                let j = stage[0];
+                let stageId = stage.stage_id;
                 var ascending = false;
-                if ((index & j) == 0) {
+                if ((index & stageId) == 0) {
                     ascending = true;
-                }
+                }   
 
                 // step 5: fetch the numbers
                 let num1 = cellStateIn[index];
-                let num2 = cellStateIn[partner_index];
+                let num2 = cellStateIn[partnerIndex];
 
                 // step 6: compare and swap
                 if (ascending) {
-                    if (num1 > num2) {
-                        //swap
-                        cellStateOut[index] = num2;
-                        cellStateOut[partner_index] = num1;
-                    }
+                    cellStateOut[index] = min(num2, num1);
+                    cellStateOut[partnerIndex] = max(num2, num1);
                 } else {
-                    if (num2 > num1) {
-                        // swap
-                        cellStateOut[index] = num2;
-                        cellStateOut[partner_index] = num1;
-                    }
+                    cellStateOut[index] = max(num1, num2);
+                    cellStateOut[partnerIndex] = min(num1, num2);
                 }
             } 
         `
@@ -178,10 +182,7 @@ async function main() {
                 let cellOffset = cell / grid * 2;
                 // translate the square into a grid space, translate the coordinate system into bottom left corner
                 // and then move it by the cell offset
-                // let gridPos = ((input.pos+1) / grid) -1 + cellOffset;
-                var gridPos = ((input.pos+1) / grid);
-                gridPos.x += cellOffset.x-1;
-                gridPos.y += 0.93;
+                let gridPos = ((input.pos+1) / grid) -1 + cellOffset;
                 var output: VertexOutput;
                 output.pos = vec4f(gridPos, 0, 1);
                 output.cell = cell;
@@ -192,7 +193,7 @@ async function main() {
             @fragment
             fn fragmentMain(input: FragmentInput) -> @location(0) vec4f {
                 let i = u32(input.instance);
-                return vec4f(.5,.5,.5,state[i]); // (Red, Green, Blue, Alpha)
+                return vec4f(.5,.5,.5,state[i]+.05); // (Red, Green, Blue, Alpha)
             }
         `
     });
@@ -217,7 +218,7 @@ async function main() {
         {
             binding: 3,
             visibility: GPUShaderStage.COMPUTE,
-            buffer: { type: "storage" }
+            buffer: {}
         },
         ]
     });
@@ -306,15 +307,11 @@ async function main() {
         }
     });
 
-
-    let step = 0;
-    let stage = 2;
-    function render() {
-        step += 1;
-        stage *= 2;
-        device.queue.writeBuffer(stageBuffer, 0, new Uint32Array([stage]));
+    function test() {
+        // just to check everythings good
         const encoder = device.createCommandEncoder();
 
+        device.queue.writeBuffer(stageBuffer, 0, new Uint32Array([GRID_SIZE * GRID_SIZE, 4, 2]));
         // compute pass
         const computePass = encoder.beginComputePass();
         computePass.setPipeline(computePipeline);
@@ -343,45 +340,46 @@ async function main() {
 
         device.queue.submit([encoder.finish()]);
     }
-
-    // setInterval(render, 1000);
+    // test();
 
     function render() {
-        step += 1;
+        const encoder = device.createCommandEncoder();
+        let step = 0;
 
         for (let stage = 2; stage <= GRID_SIZE; stage *= 2) {
-            console.log('stage',stage);
-            device.queue.writeBuffer(stageBuffer, 0, new Uint32Array([stage]));
-            const encoder = device.createCommandEncoder();
+            for (let pass = stage / 2; pass > 0; pass /= 2) {
+                device.queue.writeBuffer(stageBuffer, 0, new Uint32Array([GRID_SIZE, stage, pass]));
+                // compute pass
+                const computePass = encoder.beginComputePass();
+                computePass.setPipeline(computePipeline);
+                computePass.setBindGroup(0, bindGroups[step % 2]);
+                const workgroupCount = Math.ceil(GRID_SIZE / WORKGROUP_SIZE);
 
-            // compute pass
-            const computePass = encoder.beginComputePass();
-            computePass.setPipeline(computePipeline);
-            computePass.setBindGroup(0, bindGroups[0]);
-            const workgroupCount = Math.ceil(GRID_SIZE / WORKGROUP_SIZE);
+                computePass.dispatchWorkgroups(workgroupCount, workgroupCount);
+                computePass.end();
 
-            computePass.dispatchWorkgroups(workgroupCount, workgroupCount);
-            computePass.end();
 
-            // draw pass
-            const pass = encoder.beginRenderPass({
-                colorAttachments: [{
-                    view: context.getCurrentTexture().createView(),
-                    loadOp: "clear",
-                    clearValue: { r: 0, g: 0, b: 0.3, a: 1 },
-                    storeOp: "store",
-                }]
-            });
-
-            pass.setPipeline(renderPipeline);
-            pass.setBindGroup(0, bindGroups[0]);
-            pass.setVertexBuffer(0, vertexBuffer);
-
-            pass.draw(vertices.length / 2, GRID_SIZE);
-            pass.end();
-
-            device.queue.submit([encoder.finish()]);
+                step += 1;
+            }
         }
+        // draw pass
+        const drawPass = encoder.beginRenderPass({
+            colorAttachments: [{
+                view: context.getCurrentTexture().createView(),
+                loadOp: "clear",
+                clearValue: { r: 0, g: 0, b: 0.3, a: 1 },
+                storeOp: "store",
+            }]
+        });
+        // Bind the bind group 
+        drawPass.setBindGroup(0, bindGroups[1]);
+
+        drawPass.setPipeline(renderPipeline);
+        drawPass.setVertexBuffer(0, vertexBuffer);
+
+        drawPass.draw(vertices.length / 2, GRID_SIZE * GRID_SIZE);
+        drawPass.end();
+        device.queue.submit([encoder.finish()]);
     }
 
     render();
