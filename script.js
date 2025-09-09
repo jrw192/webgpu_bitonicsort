@@ -50,7 +50,7 @@ async function main() {
     };
 
     // ------------ define uniformBuffer for grid ------------
-    const GRID_SIZE = 32;
+    const GRID_SIZE = 128;
     const uniformArray = new Float32Array([GRID_SIZE, GRID_SIZE]);
     const uniformBuffer = device.createBuffer({
         label: "uniform",
@@ -119,11 +119,11 @@ async function main() {
             @compute @workgroup_size(${WORKGROUP_SIZE}, 1, 1)
             fn computeMain(input: ComputeInput) {
                 // step 1: identify your unique position (id)
-                let index = cellToIndex(input.invocation_id.xy);
+                // let index = cellToIndex(input.invocation_id.xy);
+                let index = input.invocation_id.x;
 
                 // step 2: determine partner's position
-                let passStride = u32(1 << stage.pass_id);
-                let partnerIndex = index ^ passStride;
+                let partnerIndex = index ^ stage.pass_id;
 
                 // step 3: avoid duplication
                 if (index > partnerIndex) {
@@ -307,79 +307,53 @@ async function main() {
         }
     });
 
-    function test() {
-        // just to check everythings good
-        const encoder = device.createCommandEncoder();
-
-        device.queue.writeBuffer(stageBuffer, 0, new Uint32Array([GRID_SIZE * GRID_SIZE, 4, 2]));
-        // compute pass
-        const computePass = encoder.beginComputePass();
-        computePass.setPipeline(computePipeline);
-        computePass.setBindGroup(0, bindGroups[0]);
-        const workgroupCount = Math.ceil(GRID_SIZE / WORKGROUP_SIZE);
-
-        computePass.dispatchWorkgroups(workgroupCount, workgroupCount);
-        computePass.end();
-
-        // draw pass
-        const pass = encoder.beginRenderPass({
-            colorAttachments: [{
-                view: context.getCurrentTexture().createView(),
-                loadOp: "clear",
-                clearValue: { r: 0, g: 0, b: 0.3, a: 1 },
-                storeOp: "store",
-            }]
-        });
-
-        pass.setPipeline(renderPipeline);
-        pass.setBindGroup(0, bindGroups[0]);
-        pass.setVertexBuffer(0, vertexBuffer);
-
-        pass.draw(vertices.length / 2, GRID_SIZE);
-        pass.end();
-
-        device.queue.submit([encoder.finish()]);
-    }
-    // test();
-
-    function render() {
-        const encoder = device.createCommandEncoder();
+    async function render() {
+        const N = GRID_SIZE * GRID_SIZE;
         let step = 0;
 
-        for (let stage = 2; stage <= GRID_SIZE; stage *= 2) {
+        for (let stage = 2; stage <= N; stage *= 2) {
             for (let pass = stage / 2; pass > 0; pass /= 2) {
-                device.queue.writeBuffer(stageBuffer, 0, new Uint32Array([GRID_SIZE, stage, pass]));
-                // compute pass
-                const computePass = encoder.beginComputePass();
-                computePass.setPipeline(computePipeline);
-                computePass.setBindGroup(0, bindGroups[step % 2]);
-                const workgroupCount = Math.ceil(GRID_SIZE / WORKGROUP_SIZE);
+                function doStep() {
+                    // console.log('pass', pass);
+                    const encoder = device.createCommandEncoder();
+                    device.queue.writeBuffer(stageBuffer, 0, new Uint32Array([GRID_SIZE, stage, pass]));
+                    // compute pass
+                    const computePass = encoder.beginComputePass();
+                    computePass.setPipeline(computePipeline);
+                    computePass.setBindGroup(0, bindGroups[step % 2]);
+                    const workgroupCount = Math.ceil(N / WORKGROUP_SIZE);
 
-                computePass.dispatchWorkgroups(workgroupCount, workgroupCount);
-                computePass.end();
+                    computePass.dispatchWorkgroups(workgroupCount, workgroupCount);
+                    computePass.end();
 
 
-                step += 1;
+                    // draw pass
+                    const drawPass = encoder.beginRenderPass({
+                        colorAttachments: [{
+                            view: context.getCurrentTexture().createView(),
+                            loadOp: "clear",
+                            clearValue: { r: 0, g: 0, b: 0.3, a: 1 },
+                            storeOp: "store",
+                        }]
+                    });
+                    // Bind the bind group 
+                    drawPass.setBindGroup(0, bindGroups[step % 2]);
+
+                    drawPass.setPipeline(renderPipeline);
+                    drawPass.setVertexBuffer(0, vertexBuffer);
+
+                    drawPass.draw(vertices.length / 2, N);
+                    drawPass.end();
+
+                    device.queue.submit([encoder.finish()]);
+
+                    step += 1;
+                }
+                setTimeout(doStep, 10);
+
+                // await new Promise(r => setTimeout(r, 20));
             }
         }
-        // draw pass
-        const drawPass = encoder.beginRenderPass({
-            colorAttachments: [{
-                view: context.getCurrentTexture().createView(),
-                loadOp: "clear",
-                clearValue: { r: 0, g: 0, b: 0.3, a: 1 },
-                storeOp: "store",
-            }]
-        });
-        // Bind the bind group 
-        drawPass.setBindGroup(0, bindGroups[1]);
-
-        drawPass.setPipeline(renderPipeline);
-        drawPass.setVertexBuffer(0, vertexBuffer);
-
-        drawPass.draw(vertices.length / 2, GRID_SIZE * GRID_SIZE);
-        drawPass.end();
-        device.queue.submit([encoder.finish()]);
     }
 
     render();
