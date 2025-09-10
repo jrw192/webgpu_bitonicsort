@@ -95,7 +95,7 @@ async function main(gridSize) {
 
 
     // ------------ compute shader module ------------
-    const WORKGROUP_SIZE = 8;
+    const WORKGROUP_SIZE = gridSize / 4;
     const computeShaderModule = device.createShaderModule({
         label: "compute shader module",
         code: /*wgsl*/`
