@@ -1,7 +1,8 @@
-async function main() {
+async function main(gridSize) {
     // ------------ setup ------------
     const canvas = document.querySelector("canvas");
     if (!navigator.gpu) {
+        alert("WebGPU not supported on this browser.");
         throw new Error("WebGPU not supported on this browser.");
     }
 
@@ -50,7 +51,9 @@ async function main() {
     };
 
     // ------------ define uniformBuffer for grid ------------
-    const GRID_SIZE = 128;
+
+    // const GRID_SIZE = 128;
+    const GRID_SIZE = gridSize;
     const uniformArray = new Float32Array([GRID_SIZE, GRID_SIZE]);
     const uniformBuffer = device.createBuffer({
         label: "uniform",
@@ -112,14 +115,9 @@ async function main() {
             @group(0) @binding(2) var<storage, read_write> cellStateOut: array<f32>;
             @group(0) @binding(3) var<uniform> stage: StageData;
 
-            fn cellToIndex(cell: vec2u) -> u32 {
-                return cell.y * u32(grid.x) + cell.x;
-            }
-
             @compute @workgroup_size(${WORKGROUP_SIZE}, 1, 1)
             fn computeMain(input: ComputeInput) {
                 // step 1: identify your unique position (id)
-                // let index = cellToIndex(input.invocation_id.xy);
                 let index = input.invocation_id.x;
 
                 // step 2: determine partner's position
@@ -350,8 +348,6 @@ async function main() {
                     step += 1;
                 }
                 setTimeout(doStep, 10);
-
-                // await new Promise(r => setTimeout(r, 20));
             }
         }
     }
@@ -359,5 +355,3 @@ async function main() {
     render();
 
 }
-
-main();
