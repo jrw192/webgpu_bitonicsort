@@ -4,14 +4,18 @@
 
 <head>
   <meta charset="utf-8">
-  <title>sort</title>
+  <title>bitonic sort</title>
 </head>
 
 <body>
-  grid size: <button onclick="main(16)">16</button>
-  <button onclick="main(32)">32</button>
-  <button onclick="main(64)">64</button>
-  <button onclick="main(128)">128 (warning my macbook can't handle this)</button>
+  <div>
+    basic webgpu implementation of the bitonic sort algorithm<br />
+    grid size: <button onclick="main(16)">16</button>
+    <button onclick="main(32)">32</button>
+    <button onclick="main(64)">64</button>
+    <button onclick="main(128)">128 (warning my macbook can't handle this)</button>
+  </div>
+
 
   <canvas width="640" height="640"></canvas>
   <script src="script.js">
